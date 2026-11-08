@@ -1,4 +1,4 @@
-/* Birthday Tracker v0.4.1 — Lovelace card. No external dependencies. */
+/* Birthday Tracker v0.4.2 — Lovelace card. No external dependencies. */
 class BirthdayTrackerCard extends HTMLElement {
   constructor() {
     super();
@@ -114,6 +114,15 @@ class BirthdayTrackerCard extends HTMLElement {
     const shadow = this.shadowRoot;
     shadow.replaceChildren();
     const style = document.createElement("style");
+    // Deliberately use opaque colours for the popup. Home Assistant card
+    // background variables may be translucent in glass/transparent themes.
+    const isDark = this._hass?.themes?.darkMode ??
+      (window.matchMedia?.("(prefers-color-scheme: dark)").matches ?? false);
+    const dialogBackground = isDark ? "#25272d" : "#ffffff";
+    const dialogForeground = isDark ? "#f7f7f8" : "#202124";
+    const dialogSecondary = isDark ? "#b9bbc3" : "#59616c";
+    const dialogDivider = isDark ? "#4b4d55" : "#d9dce2";
+    const dialogSurface = isDark ? "#34363e" : "#f0f2f5";
     style.textContent = `
       :host{display:block;color:var(--primary-text-color);font-family:var(--primary-font-family,Roboto,sans-serif)}
       ha-card{display:block;position:relative;background:var(--ha-card-background,var(--card-background-color,#fff));border-radius:var(--ha-card-border-radius,12px);padding:18px;overflow:visible}
@@ -133,14 +142,14 @@ class BirthdayTrackerCard extends HTMLElement {
       .right{display:grid;justify-items:end;gap:5px}.pill{font-size:12px;border-radius:18px;background:var(--secondary-background-color,#eee);padding:5px 8px;white-space:nowrap}
       .today .pill{background:var(--success-color,#279650);color:white}.chevron{font-size:15px;color:var(--secondary-text-color,#888)}
       .empty{padding:14px 0;color:var(--secondary-text-color,#777);font-size:14px}
-      .backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box}
-      .dialog{background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color);width:min(460px,100%);max-height:min(80vh,680px);overflow:auto;border-radius:16px;padding:20px;box-sizing:border-box;box-shadow:0 18px 55px rgba(0,0,0,.25)}
-      .dialog-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.dialog-title{font-size:20px;font-weight:700}.subtle{color:var(--secondary-text-color,#777);font-size:13px;margin-top:5px}
-      .close{background:var(--secondary-background-color,#eee);border:0;border-radius:50%;width:32px;height:32px;font-size:22px;flex-shrink:0}
-      .age-banner{border-radius:10px;padding:10px 12px;margin:17px 0 5px;background:var(--secondary-background-color,#eee);font-weight:650}
-      .fields{margin-top:12px}.field{display:grid;grid-template-columns:110px minmax(0,1fr);gap:12px;padding:10px 0;border-bottom:1px solid var(--divider-color,#ddd);font-size:13px;line-height:1.5}
-      .field-label{color:var(--secondary-text-color,#777)}.field-value{overflow-wrap:anywhere;white-space:pre-wrap}
-      .metadata-hint{margin-top:14px;font-size:12px;color:var(--secondary-text-color,#777)}
+      .backdrop{position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box}
+      .dialog{background:var(--birthday-tracker-dialog-background,${dialogBackground});color:var(--birthday-tracker-dialog-text,${dialogForeground});border:1px solid ${dialogDivider};isolation:isolate;width:min(460px,100%);max-height:min(80vh,680px);overflow:auto;border-radius:16px;padding:20px;box-sizing:border-box;box-shadow:0 22px 70px rgba(0,0,0,.65)}
+      .dialog-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.dialog-title{font-size:20px;font-weight:700}.dialog .subtle{color:${dialogSecondary};font-size:13px;margin-top:5px}
+      .close{background:${dialogSurface};color:${dialogForeground};border:0;border-radius:50%;width:32px;height:32px;font-size:22px;flex-shrink:0}
+      .age-banner{border-radius:10px;padding:10px 12px;margin:17px 0 5px;background:${dialogSurface};font-weight:650}
+      .fields{margin-top:12px}.field{display:grid;grid-template-columns:110px minmax(0,1fr);gap:12px;padding:10px 0;border-bottom:1px solid ${dialogDivider};font-size:13px;line-height:1.5}
+      .field-label{color:${dialogSecondary}}.field-value{overflow-wrap:anywhere;white-space:pre-wrap}
+      .metadata-hint{margin-top:14px;font-size:12px;color:${dialogSecondary}}
       .compact ha-card{padding:10px 12px}
       .compact .header{margin-bottom:6px}
       .compact .title{font-size:17px}
