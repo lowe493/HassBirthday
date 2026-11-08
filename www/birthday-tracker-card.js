@@ -1,4 +1,4 @@
-/* Birthday Tracker v0.4.0 — Lovelace card. No external dependencies. */
+/* Birthday Tracker v0.4.1 — Lovelace card. No external dependencies. */
 class BirthdayTrackerCard extends HTMLElement {
   constructor() {
     super();
@@ -14,7 +14,11 @@ class BirthdayTrackerCard extends HTMLElement {
     if (!config || typeof config.entity !== "string" || !config.entity.trim()) {
       throw new Error("Birthday Tracker: provide an entity, e.g. sensor.upcoming_birthdays");
     }
-    this._config = { title: "Upcoming Birthdays", max_items: 10, ...config };
+    this._config = {
+      title: "Upcoming Birthdays", max_items: 10, days_ahead: null,
+      show_filters: true, show_age: true, show_countdown: true,
+      compact_mode: false, show_missing_metadata: true, ...config
+    };
     this._render();
   }
   set hass(hass) {
@@ -34,7 +38,12 @@ class BirthdayTrackerCard extends HTMLElement {
   connectedCallback() { document.addEventListener("keydown", this._escapeHandler); }
   disconnectedCallback() { document.removeEventListener("keydown", this._escapeHandler); }
   getCardSize() { return 4; }
-  static getStubConfig() { return { entity: "sensor.upcoming_birthdays", title: "Upcoming Birthdays", max_items: 10 }; }
+  static getStubConfig() { return {
+    entity: "sensor.upcoming_birthdays", title: "Upcoming Birthdays",
+    max_items: 5, days_ahead: 60, show_filters: false,
+    show_age: true, show_countdown: true, compact_mode: true,
+    show_missing_metadata: false
+  }; }
 
   _element(tag, className, text) {
     const node = document.createElement(tag);
@@ -78,7 +87,7 @@ class BirthdayTrackerCard extends HTMLElement {
     close.setAttribute("aria-label", "Close birthday details");
     close.addEventListener("click", () => this._closeDetails());
     top.append(heading, close); dialog.append(top);
-    if (Number.isInteger(person.turning_age)) {
+    if (this._config.show_age !== false && Number.isInteger(person.turning_age)) {
       const age = this._element("div", "age-banner", `🎂 Turning ${person.turning_age}`);
       dialog.append(age);
     }
@@ -93,7 +102,7 @@ class BirthdayTrackerCard extends HTMLElement {
     this._detailsField(fields, "Interests", Array.isArray(person.interests) ? person.interests : []);
     if (!fields.childNodes.length) fields.append(this._element("div", "subtle", "No extra birthday details available yet."));
     dialog.append(fields);
-    if (person.metadata_status !== "loaded") {
+    if (this._config.show_missing_metadata !== false && person.metadata_status !== "loaded") {
       dialog.append(this._element("div", "metadata-hint", "ℹ No birthday.json details loaded for this event yet."));
     }
     backdrop.append(dialog);
@@ -132,16 +141,33 @@ class BirthdayTrackerCard extends HTMLElement {
       .fields{margin-top:12px}.field{display:grid;grid-template-columns:110px minmax(0,1fr);gap:12px;padding:10px 0;border-bottom:1px solid var(--divider-color,#ddd);font-size:13px;line-height:1.5}
       .field-label{color:var(--secondary-text-color,#777)}.field-value{overflow-wrap:anywhere;white-space:pre-wrap}
       .metadata-hint{margin-top:14px;font-size:12px;color:var(--secondary-text-color,#777)}
+      .compact ha-card{padding:10px 12px}
+      .compact .header{margin-bottom:6px}
+      .compact .title{font-size:17px}
+      .compact .birthday{padding:7px 2px;gap:8px}
+      .compact .avatar{width:32px;height:32px;font-size:17px}
+      .compact .subtitle{margin-top:2px;font-size:11px}
+      .compact .pill{font-size:11px;padding:3px 7px}
+      .compact .right{gap:2px}
+      .compact .filters{margin-bottom:7px}
+      .compact .count{padding:3px 7px}
       @media(max-width:360px){.birthday{gap:8px}.avatar{height:36px;width:36px}.field{grid-template-columns:1fr;gap:2px}}
     `;
     shadow.append(style);
+    const root = this._element("div", this._config.compact_mode === true ? "compact" : "");
     const card = this._element("ha-card");
     const state = this._hass?.states[this._config.entity];
     const source = Array.isArray(state?.attributes?.birthdays) ? state.attributes.birthdays : [];
     const birthdays = source.filter(b => b && typeof b === "object");
+    const requestedDays = this._config.days_ahead;
+    const daysAhead = requestedDays === null || requestedDays === undefined || requestedDays === ""
+      ? Infinity : Number(requestedDays);
+    const horizon = Number.isFinite(daysAhead) && daysAhead >= 0 ? daysAhead : Infinity;
+    const eligible = birthdays.filter(b => Number.isFinite(b.days_until)
+      && b.days_until >= 0 && b.days_until <= horizon);
     const header = this._element("div", "header");
     header.append(this._element("div", "title", `🎂 ${this._config.title}`));
-    header.append(this._element("span", "count", `${birthdays.length} upcoming`));
+    header.append(this._element("span", "count", `${eligible.length} upcoming`));
     card.append(header);
     if (this._config.show_filters !== false) {
       const filters = this._element("div", "filters");
@@ -159,8 +185,10 @@ class BirthdayTrackerCard extends HTMLElement {
       card.append(this._element("div", "empty", "Birthday Tracker is currently unavailable."));
     } else {
       const max = Math.max(1, Number.parseInt(this._config.max_items, 10) || 10);
-      const limit = this._filter === "all" ? Infinity : Number(this._filter);
-      const visible = birthdays.filter(b => Number.isFinite(b.days_until) && b.days_until >= 0 && b.days_until <= limit).slice(0, max);
+      const filterLimit = this._config.show_filters === false || this._filter === "all" ? Infinity : Number(this._filter);
+      const visible = eligible.filter(b => b.days_until <= filterLimit)
+        .sort((a, b) => a.days_until - b.days_until)
+        .slice(0, max);
       if (!visible.length) card.append(this._element("div", "empty", "No birthdays in this period."));
       for (const person of visible) {
         const item = this._element("div", `entry${person.days_until === 0 ? " today" : ""}`);
@@ -170,10 +198,12 @@ class BirthdayTrackerCard extends HTMLElement {
         const main = this._element("div", "identity");
         main.append(this._element("div", "name", person.name || person.event_title || "Birthday"));
         let subtitle = this._date(person.date, { day: "numeric", month: "long" });
-        if (Number.isInteger(person.turning_age)) subtitle += ` · Turning ${person.turning_age}`;
+        if (this._config.show_age !== false && Number.isInteger(person.turning_age)) subtitle += ` · Turning ${person.turning_age}`;
         main.append(this._element("div", "subtitle", subtitle));
         const right = this._element("div", "right");
-        right.append(this._element("span", "pill", this._countdown(person.days_until)));
+        if (this._config.show_countdown !== false) {
+          right.append(this._element("span", "pill", this._countdown(person.days_until)));
+        }
         right.append(this._element("span", "chevron", "›"));
         button.append(avatar, main, right);
         button.addEventListener("click", () => { this._selected = person; this._render(); });
@@ -181,7 +211,8 @@ class BirthdayTrackerCard extends HTMLElement {
       }
     }
     if (this._selected !== null) this._renderDetails(card, this._selected);
-    shadow.append(card);
+    root.append(card);
+    shadow.append(root);
     if (this._selected !== null && this._focusClose) this._focusClose.focus();
   }
 }

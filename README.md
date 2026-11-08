@@ -1,4 +1,4 @@
-# Birthday Tracker v0.4.0 — Lovelace card refresh
+# Birthday Tracker v0.4.1 — Lovelace card configuration
 
 This release keeps the working v0.3.3 Apple iCloud CalDAV attachment downloader **unchanged** and redesigns the Lovelace card.
 
@@ -14,10 +14,10 @@ This release keeps the working v0.3.3 Apple iCloud CalDAV attachment downloader 
 
 1. Extract the ZIP and replace the repository files **at the root** (not in a nested folder).
 2. Keep your own issue tracker URL in `custom_components/birthday_tracker/manifest.json` if you already customised it; the packaged placeholder is `OWNER/REPOSITORY`.
-3. Commit and publish GitHub release `v0.4.0`.
+3. Commit and publish GitHub release `v0.4.1`.
 4. Refresh HACS and update the Birthday Tracker integration, then restart Home Assistant.
 5. **Important:** HACS integration updates do not automatically copy the Lovelace card. Copy `www/birthday-tracker-card.js` from this release to Home Assistant's `/config/www/birthday-tracker-card.js`.
-6. If not already configured, add `/local/birthday-tracker-card.js` as a JavaScript module resource under **Settings → Dashboards → Resources** (the location may vary with HA version). If previously registered, leave it as-is, then hard-refresh the browser or append a resource version query like `?v=040` to invalidate the cache.
+6. If not already configured, add `/local/birthday-tracker-card.js` as a JavaScript module resource under **Settings → Dashboards → Resources** (the location may vary with HA version). If previously registered, leave it as-is, then hard-refresh the browser or append a resource version query like `?v=041` to invalidate the cache.
 
 Manual card YAML:
 
@@ -25,8 +25,13 @@ Manual card YAML:
 type: custom:birthday-tracker-card
 entity: sensor.upcoming_birthdays # replace with your actual entity ID
 title: Upcoming Birthdays
-max_items: 10
-show_filters: true
+max_items: 5
+days_ahead: 60
+show_filters: false
+show_age: true
+show_countdown: true
+compact_mode: true
+show_missing_metadata: false
 ```
 
 `max_items` limits the number visible after filtering, not the number fetched. Change `show_filters` to `false` to hide the filter chips.
@@ -38,3 +43,15 @@ v0.3.3 confirmed one `birthday.json` was downloaded and parsed from your iCloud 
 ## Safety
 
 The integration reads calendars and attachments only; it never writes to Apple Calendar. Avoid posting personal addresses, attachment links or credentials in public issues. The attachment downloader retains the same strict HTTPS host restrictions as v0.3.3.
+
+## New v0.4.1 card options
+
+- `days_ahead` (optional, default unlimited): only display birthdays within the next number of days; `0` shows today's birthdays only. This is a **card display setting**, not a calendar fetch period.
+- `show_filters` (default `true`): toggles 30/90-day buttons. When hidden the card uses `days_ahead` directly.
+- `show_age` (default `true`): displays/hides turning age in the row and detail dialog.
+- `show_countdown` (default `true`): displays/hides countdown pill in each row.
+- `compact_mode` (default `false`): tighter spacing, shorter rows and smaller heading/avatar.
+- `show_missing_metadata` (default `true`): displays/hides the missing-JSON note in the detail dialog. Does **not** remove birthdays without JSON from the list.
+- `max_items` (default `10`): max visible birthdays, applied after the date horizon and filter.
+
+Existing integration, Apple CalDAV download code and stored credentials are unchanged. You must manually replace the `/homeassistant/www/birthday-tracker-card.js` file and update the resource URL to `/local/birthday-tracker-card.js?v=0.4.1` (or force-refresh) to load the new card.
