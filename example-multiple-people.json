@@ -1,0 +1,22 @@
+{
+  "people": [
+    {
+      "full_name": "Person One",
+      "date_of_birth": "04/04/1990",
+      "address": {
+        "line1": "",
+        "city": "",
+        "postcode": ""
+      }
+    },
+    {
+      "full_name": "Person Two",
+      "date_of_birth": "04/04/1995",
+      "address": {
+        "line1": "",
+        "city": "",
+        "postcode": ""
+      }
+    }
+  ]
+}
