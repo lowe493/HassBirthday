@@ -8,7 +8,7 @@ from __future__ import annotations
 import base64
 import json
 from datetime import date, timedelta
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, unquote
 import xml.etree.ElementTree as ET
 
 from aiohttp import BasicAuth, ClientError
@@ -64,24 +64,57 @@ def _birthday_ics(ical_text, keyword):
     return items
 
 
-async def _get_json(session, url, auth, calendar_origin):
+# Apple Calendar can refer to an attachment on a *different* iCloud host.
+# Only HTTPS Apple-controlled domains are permitted; never send the Apple app
+# password to an attachment host other than the authenticated calendar host.
+# In particular, public links or arbitrary hosts supplied by ICS are not fetched.
+APPLE_ATTACHMENT_DOMAINS = ("icloud.com", "icloud-content.com")
+MAX_ATTACHMENT_REDIRECTS = 3
+
+
+def _safe_attachment_host(url):
     if not valid_url(url):
+        return False
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").lower().rstrip(".")
+    return (parsed.port in (None, 443) and hostname not in
+            ("icloud.com", "icloud-content.com") and
+            any(hostname.endswith("." + suffix) for suffix in APPLE_ATTACHMENT_DOMAINS))
+
+
+async def _get_json(session, url, auth, calendar_origin):
+    """Fetch a named JSON file from a trusted iCloud host, never leak auth."""
+    if not _safe_attachment_host(url):
         return None, 'unsafe_attachment_url'
-    # Never send credentials to a different host, even on an HTTPS redirect.
-    if urlparse(url).hostname != calendar_origin:
-        return None, 'external_attachment_url'
-    try:
-        async with session.get(url, auth=auth, allow_redirects=False, timeout=20) as response:
-            if response.status in (301, 302, 303, 307, 308):
-                return None, 'attachment_redirect_unsupported'
-            if response.status != 200:
-                return None, f'attachment_http_{response.status}'
-            content = await response.content.read(MAX_JSON_BYTES + 1)
-    except (ClientError, TimeoutError):
-        return None, 'attachment_network_error'
-    if len(content) > MAX_JSON_BYTES:
-        return None, 'attachment_too_large'
-    return _decode_json(content)
+    current = url
+    # Redirects are inspected manually; aiohttp never sees automatic redirects.
+    for _ in range(MAX_ATTACHMENT_REDIRECTS + 1):
+        hostname = urlparse(current).hostname.lower()
+        # Other iCloud attachment hosts get an unauthenticated GET.  The URL
+        # may itself have a capability token. Credentials only go to the
+        # *exact* calendar host, not its sibling subdomains.
+        credentials = auth if hostname == calendar_origin else None
+        try:
+            async with session.get(current, auth=credentials, allow_redirects=False,
+                                   timeout=20) as response:
+                if response.status in (301, 302, 303, 307, 308):
+                    location = response.headers.get('Location', '')
+                    destination = urljoin(current, location)
+                    if not _safe_attachment_host(destination):
+                        return None, 'unsafe_attachment_redirect'
+                    current = destination
+                    continue
+                if response.status != 200:
+                    return None, f'attachment_http_{response.status}'
+                if response.content_length is not None and response.content_length > MAX_JSON_BYTES:
+                    return None, 'attachment_too_large'
+                content = await response.content.read(MAX_JSON_BYTES + 1)
+        except (ClientError, TimeoutError, ValueError):
+            return None, 'attachment_network_error'
+        if len(content) > MAX_JSON_BYTES:
+            return None, 'attachment_too_large'
+        return _decode_json(content)
+    return None, 'attachment_redirect_limit'
 
 
 def _decode_json(content):
@@ -240,7 +273,8 @@ async def load_calendars_attachments(hass, url, username, password, keyword):
     by_title = {}
     stats = {**request_stats, 'attachment_status': 'caldav_connected', 'caldav_events_found': 0,
              'caldav_events_with_attach': 0, 'caldav_json_found': 0,
-             'caldav_json_loaded': 0, 'caldav_ambiguous_titles': 0,
+             'caldav_json_loaded': 0, 'caldav_json_download_failed': 0,
+             'caldav_json_download_statuses': {}, 'caldav_ambiguous_titles': 0,
              'caldav_ics_parse_errors': 0}
     origin = urlparse(url).hostname
     for ical_text in ics_texts:
@@ -262,6 +296,11 @@ async def load_calendars_attachments(hass, url, username, password, keyword):
                     item['metadata'], item['status'] = await _read_attach(session, prop, auth, origin)
                     if item['status'] == 'loaded':
                         stats['caldav_json_loaded'] += 1
+                    else:
+                        stats['caldav_json_download_failed'] += 1
+                        code = item['status']
+                        statuses = stats['caldav_json_download_statuses']
+                        statuses[code] = statuses.get(code, 0) + 1
                     break
             by_title.setdefault(key, []).append(item)
     result = {}
