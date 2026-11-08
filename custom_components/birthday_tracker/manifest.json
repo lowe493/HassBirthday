@@ -1,0 +1,10 @@
+{
+  "domain": "birthday_tracker",
+  "name": "Birthday Tracker",
+  "version": "0.1.0",
+  "documentation": "https://www.home-assistant.io/integrations/calendar/",
+  "requirements": [],
+  "codeowners": [],
+  "config_flow": true,
+  "iot_class": "local_polling"
+}

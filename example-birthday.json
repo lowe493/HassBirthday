@@ -1,0 +1,15 @@
+{
+  "full_name": "Emma Thompson",
+  "date_of_birth": "12/11/1994",
+  "address": {
+    "line1": "12 High Street",
+    "line2": "",
+    "city": "Birmingham",
+    "postcode": "B1 1AA",
+    "country": "UK"
+  },
+  "relationship": "Friend",
+  "notes": "",
+  "gift_ideas": [],
+  "interests": []
+}
