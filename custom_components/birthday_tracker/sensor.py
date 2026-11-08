@@ -7,6 +7,9 @@ from pathlib import Path
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.update_coordinator import UpdateFailed
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, CoordinatorEntity
 from homeassistant.util import dt as dt_util
 from .const import (DOMAIN, CONF_CALENDAR, CONF_KEYWORD, DEFAULT_KEYWORD,
@@ -28,11 +31,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         today = dt_util.now().date()
         start = dt_util.start_of_local_day()
         end = start + timedelta(days=370)
-        response = await hass.services.async_call(
-            "calendar", "get_events", {
-                "entity_id": calendar, "start_date_time": start.isoformat(),
-                "end_date_time": end.isoformat()}, blocking=True, return_response=True)
-        events = (response or {}).get(calendar, {}).get("events") or []
+        calendar_state = hass.states.get(calendar)
+        if calendar_state is None or calendar_state.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            raise UpdateFailed(f"Calendar {calendar} is not ready; will retry")
+        try:
+            response = await hass.services.async_call(
+                "calendar", "get_events", {
+                    "entity_id": calendar, "start_date_time": start.isoformat(),
+                    "end_date_time": end.isoformat()}, blocking=True, return_response=True)
+        except HomeAssistantError as err:
+            # Avoid an unhandled coordinator traceback if CalDAV entities load late.
+            raise UpdateFailed(f"Calendar {calendar} event request failed; will retry") from err
+        if not isinstance(response, dict) or calendar not in response:
+            raise UpdateFailed(f"Calendar {calendar} did not return an event response")
+        events = response[calendar].get("events") or []
         directory = Path(hass.config.path("birthday_tracker", "events"))
         output, seen = [], set()
         counts = {"calendar_events_scanned": len(events), "non_birthdays_skipped": 0,

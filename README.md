@@ -1,4 +1,18 @@
-# Birthday Tracker v0.3.1 — HACS update (CalDAV autodiscovery)
+# Birthday Tracker v0.3.2 — HACS update (CalDAV retrieval + startup resilience)
+
+**Changes from 0.3.1**
+
+- Handles unavailable/missing Home Assistant calendar entities gracefully with `UpdateFailed`, allowing scheduled retries instead of an unexpected traceback.
+- Tries a bounded CalDAV REPORT first, then an unbounded REPORT, then a limited read-only PROPFIND + GET fallback (maximum 200 `.ics` objects). The fallback may be slow for a large calendar; a limit prevents an unbounded fetch.
+- Adds diagnostics: `caldav_request_method`, `caldav_request_fallback`, `caldav_request_errors` (sanitised codes only), `caldav_failure_stage`, and fallback counts. Never returns CalDAV URLs or credentials in sensor attributes.
+- Continues to use authenticated autodiscovery to match `calendar.shared` with `Shared`, and retains the `DD/MM/YYYY` JSON structure and existing sensor.
+- **Note:** Apple Calendar managed attachment support remains experimental. The update cannot guarantee that `birthday.json` will appear in CalDAV ATTACH properties.
+
+## Upgrade
+
+Upload ZIP contents to repository root, commit and tag `v0.3.2`, refresh HACS, install and restart Home Assistant. Existing options should remain; use `https://caldav.icloud.com/` with an Apple app-specific password. Inspect sensor diagnostic attributes and share only status/method/error codes, never private URLs or passwords.
+
+# Birthday Tracker v0.3.1 (previous release details) — HACS update (CalDAV autodiscovery)
 
 **Changes from 0.3.0**
 

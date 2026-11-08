@@ -112,40 +112,142 @@ async def _read_attach(session, prop, auth, calendar_origin):
     return await _get_json(session, str(prop), auth, calendar_origin)
 
 
-async def load_calendars_attachments(hass, url, username, password, keyword):
-    """Return title-to-metadata mapping and diagnostics.
+# iCloud may reject an unbounded REPORT. Try a bounded range, then a
+# limited, read-only PROPFIND + GET fallback. Never log private URLs.
+from .caldav_discovery import _safe_url
+from datetime import datetime, timezone
 
-    Deliberately refuses ambiguous titles: HA get_events does not supply UID,
-    so titles are the only safe matching key for an event occurrence.
-    """
+MAX_FALLBACK_OBJECTS = 200
+PROPFIND_OBJECTS = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontenttype/></d:prop></d:propfind>"""
+
+
+def _bounded_report():
+    today = date.today()
+    a = today.strftime('%Y%m%d') + 'T000000Z'
+    b = (today + timedelta(days=375)).strftime('%Y%m%d') + 'T000000Z'
+    return f"""<?xml version="1.0" encoding="utf-8"?>
+<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop><d:getetag/><c:calendar-data/></d:prop>
+  <c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">
+  <c:time-range start="{a}" end="{b}"/>
+  </c:comp-filter></c:comp-filter></c:filter>
+</c:calendar-query>"""
+
+
+async def _fetch_ics(session, url, collection_url, auth):
+    if not _safe_url(url, collection_url):
+        return None, 'unsafe_object_url'
+    # Reject out-of-collection paths, even on an otherwise trusted host.
+    from urllib.parse import unquote
+    if (urlparse(url).netloc != urlparse(collection_url).netloc or
+            not unquote(urlparse(url).path).startswith(unquote(urlparse(collection_url).path).rstrip('/') + '/')):
+        return None, 'object_outside_collection'
+    try:
+        async with session.get(url, auth=auth, allow_redirects=False, timeout=15) as response:
+            if response.status != 200:
+                return None, f'object_http_{response.status}'
+            body = await response.content.read(MAX_ICS_BYTES + 1)
+        if len(body) > MAX_ICS_BYTES:
+            return None, 'object_too_large'
+        return body.decode('utf-8-sig'), None
+    except (ClientError, TimeoutError, UnicodeError, ValueError) as err:
+        return None, f'object_request_{type(err).__name__}'
+
+
+async def _request_calendar_data(session, url, auth):
+    # The first attempt preserves historical behaviour, the bounded REPORT
+    # avoids iCloud refusing a query of the complete calendar history.
+    attempts = [('bounded_report', _bounded_report()), ('unbounded_report', REPORT)]
+    errors = []
+    for method, body in attempts:
+        try:
+            async with session.request('REPORT', url, auth=auth, headers={
+                    'Depth': '1', 'Content-Type': 'application/xml; charset=utf-8'},
+                    data=body.encode(), allow_redirects=False, timeout=30) as response:
+                if response.status != 207:
+                    errors.append(f'{method}_http_{response.status}')
+                    continue
+                payload = await response.content.read(MAX_ICS_BYTES + 1)
+            if len(payload) > MAX_ICS_BYTES:
+                errors.append(f'{method}_too_large')
+                continue
+            root = ET.fromstring(payload)
+            texts = [e.text for e in root.findall('.//c:calendar-data', NS) if e.text]
+            return texts, {'caldav_request_method': method, 'caldav_request_fallback': method != 'bounded_report'}
+        except (ClientError, TimeoutError, ET.ParseError, ValueError) as err:
+            errors.append(f'{method}_{type(err).__name__}')
+
+    # A small CalDAV collection might support collection PROPFIND but no REPORT.
+    try:
+        async with session.request('PROPFIND', url, auth=auth, allow_redirects=False,
+                                   headers={'Depth': '1', 'Content-Type': 'application/xml; charset=utf-8'},
+                                   data=PROPFIND_OBJECTS.encode(), timeout=30) as response:
+            if response.status != 207:
+                errors.append(f'propfind_http_{response.status}')
+                return [], {'attachment_status': 'caldav_fetch_failed',
+                            'caldav_failure_stage': 'event_retrieval',
+                            'caldav_request_errors': errors}
+            payload = await response.content.read(MAX_ICS_BYTES + 1)
+        if len(payload) > MAX_ICS_BYTES:
+            errors.append('propfind_too_large')
+            return [], {'attachment_status': 'caldav_fetch_failed', 'caldav_failure_stage': 'event_retrieval',
+                        'caldav_request_errors': errors}
+        root = ET.fromstring(payload)
+        hrefs = []
+        for res in root.findall('d:response', NS):
+            href = res.findtext('d:href', namespaces=NS)
+            if href and urlparse(href).path.lower().endswith('.ics'):
+                full = urljoin(url, href)
+                if full not in hrefs:
+                    hrefs.append(full)
+        if len(hrefs) > MAX_FALLBACK_OBJECTS:
+            return [], {'attachment_status': 'caldav_fallback_limit_exceeded',
+                        'caldav_failure_stage': 'event_retrieval',
+                        'caldav_fallback_objects_found': len(hrefs),
+                        'caldav_request_errors': errors}
+        texts, object_errors = [], []
+        for href in hrefs:
+            data, error = await _fetch_ics(session, href, url, auth)
+            if data:
+                texts.append(data)
+            elif error:
+                object_errors.append(error)
+        if object_errors and not texts:
+            return [], {'attachment_status': 'caldav_fetch_failed', 'caldav_failure_stage': 'object_get',
+                        'caldav_request_errors': errors + list(dict.fromkeys(object_errors))}
+        return texts, {'caldav_request_method': 'propfind_get', 'caldav_request_fallback': True,
+                       'caldav_fallback_objects_found': len(hrefs),
+                       'caldav_fallback_objects_loaded': len(texts),
+                       'caldav_fallback_object_errors': len(object_errors),
+                       'caldav_previous_request_errors': errors}
+    except (ClientError, TimeoutError, ET.ParseError, ValueError) as err:
+        errors.append(f'propfind_{type(err).__name__}')
+        return [], {'attachment_status': 'caldav_fetch_failed',
+                    'caldav_failure_stage': 'event_retrieval',
+                    'caldav_request_errors': errors}
+
+
+async def load_calendars_attachments(hass, url, username, password, keyword):
+    """Return title-to-metadata mapping and safe, structured diagnostics."""
     if not valid_url(url):
         return {}, {'attachment_status': 'invalid_calendar_url'}
     session = async_get_clientsession(hass)
     auth = BasicAuth(username, password)
-    try:
-        async with session.request('REPORT', url, auth=auth, headers={
-                'Depth': '1', 'Content-Type': 'application/xml; charset=utf-8'},
-                data=REPORT.encode(), allow_redirects=False, timeout=35) as response:
-            if response.status != 207:
-                return {}, {'attachment_status': f'caldav_http_{response.status}'}
-            body = await response.content.read(MAX_ICS_BYTES + 1)
-        if len(body) > MAX_ICS_BYTES:
-            return {}, {'attachment_status': 'caldav_response_too_large'}
-        root = ET.fromstring(body)
-    except (ClientError, TimeoutError, ET.ParseError):
-        return {}, {'attachment_status': 'caldav_request_failed'}
-
+    ics_texts, request_stats = await _request_calendar_data(session, url, auth)
+    if 'attachment_status' in request_stats:
+        return {}, request_stats
     by_title = {}
-    stats = {'attachment_status': 'caldav_connected', 'caldav_events_found': 0,
+    stats = {**request_stats, 'attachment_status': 'caldav_connected', 'caldav_events_found': 0,
              'caldav_events_with_attach': 0, 'caldav_json_found': 0,
-             'caldav_json_loaded': 0, 'caldav_ambiguous_titles': 0}
+             'caldav_json_loaded': 0, 'caldav_ambiguous_titles': 0,
+             'caldav_ics_parse_errors': 0}
     origin = urlparse(url).hostname
-    for calendar_data in root.findall('.//c:calendar-data', NS):
-        if not calendar_data.text:
-            continue
+    for ical_text in ics_texts:
         try:
-            parsed = _birthday_ics(calendar_data.text, keyword)
-        except (ValueError, TypeError, ImportError):
+            parsed = _birthday_ics(ical_text, keyword)
+        except (ValueError, TypeError, ImportError, KeyError):
+            stats['caldav_ics_parse_errors'] += 1
             continue
         for event in parsed:
             stats['caldav_events_found'] += 1
@@ -164,13 +266,15 @@ async def load_calendars_attachments(hass, url, username, password, keyword):
             by_title.setdefault(key, []).append(item)
     result = {}
     for key, items in by_title.items():
-        # Repeated iCalendar VEVENTs with same title+UID may represent exceptions.
+        # Distinct UIDs with the same title are ambiguous; don't apply the
+        # wrong person's information to an event.
         uids = {i['uid'] for i in items}
-        if len(uids) != 1 or len(items) > 1:
+        if len(uids) != 1:
             stats['caldav_ambiguous_titles'] += 1
             result[key] = {'metadata': None, 'status': 'ambiguous_event_title'}
         else:
-            result[key] = items[0]
+            # Multiple VEVENT components with same UID may represent exceptions.
+            result[key] = next((i for i in items if i['status'] == 'loaded'), items[0])
     if stats['caldav_events_found'] and not stats['caldav_json_found']:
         stats['attachment_status'] = 'no_named_json_attachments_exposed'
     return result, stats
