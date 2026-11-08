@@ -14,6 +14,7 @@ from .const import (DOMAIN, CONF_CALENDAR, CONF_KEYWORD, DEFAULT_KEYWORD,
 from .helpers import (is_birthday_event, parse_uk_date, safe_filename,
                       normalize_people, birthday_on_event)
 from .caldav_attachments import load_calendars_attachments
+from .caldav_discovery import discover_calendar
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -44,8 +45,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         cal_pass = entry.options.get(CONF_CALDAV_PASSWORD, "")
         lookup, attachment_stats = {}, {"attachment_status": "not_configured"}
         if cal_url and cal_user and cal_pass:
-            lookup, attachment_stats = await load_calendars_attachments(
-                hass, cal_url, cal_user, cal_pass, keyword)
+            # A normal iCloud URL is a discovery endpoint, not a collection.
+            # Resolve the selected calendar without guessing private URLs.
+            state = hass.states.get(calendar)
+            friendly_name = (state.attributes.get('friendly_name', '') if state else '')
+            collection_url, discovery_stats = await discover_calendar(
+                hass, cal_url, cal_user, cal_pass, calendar, friendly_name)
+            if collection_url:
+                lookup, attachment_stats = await load_calendars_attachments(
+                    hass, collection_url, cal_user, cal_pass, keyword)
+                attachment_stats = {**discovery_stats, **attachment_stats}
+            else:
+                attachment_stats = discovery_stats
         for event in events:
             title = str(event.get("summary") or "")
             value = event.get("start")
