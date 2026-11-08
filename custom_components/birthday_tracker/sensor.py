@@ -1,7 +1,7 @@
-"""Read calendar events and optional locally supplied JSON metadata."""
+"""Birthday event list with local metadata fallback and honest diagnostics."""
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 import json
 import logging
 from pathlib import Path
@@ -11,41 +11,16 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, CoordinatorEntity
 from homeassistant.util import dt as dt_util
-from .const import DOMAIN, CONF_CALENDAR
+
+from .const import DOMAIN, CONF_CALENDAR, CONF_KEYWORD, DEFAULT_KEYWORD
+from .helpers import is_birthday_event, parse_uk_date, safe_filename
 
 _LOGGER = logging.getLogger(__name__)
 
-
-def parse_uk_date(value):
-    if not isinstance(value, str):
-        return None
-    try:
-        return datetime.strptime(value, "%d/%m/%Y").date()
-    except ValueError:
-        return None
-
-
-def next_birthday(dob: date, today: date):
-    """For 29 February birthdays, use 28 February in non-leap years."""
-    def anniversary(year):
-        try:
-            return date(year, dob.month, dob.day)
-        except ValueError:
-            return date(year, 2, 28)
-    value = anniversary(today.year)
-    if value < today:
-        value = anniversary(today.year + 1)
-    return value
-
-
-def safe_filename(uid: str) -> str:
-    """A stable, filesystem-safe key for metadata; no path traversal."""
-    import hashlib
-    return hashlib.sha256(uid.encode("utf-8")).hexdigest()[:24] + ".json"
-
-
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
     calendar = entry.data[CONF_CALENDAR]
+    keyword = (entry.options.get(CONF_KEYWORD) or entry.data.get(CONF_KEYWORD)
+               or DEFAULT_KEYWORD).strip()
 
     async def fetch():
         today = dt_util.now().date()
@@ -53,78 +28,89 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
         end = start + timedelta(days=370)
         response = await hass.services.async_call(
             "calendar", "get_events",
-            {"entity_id": calendar,
-             "start_date_time": start.isoformat(),
+            {"entity_id": calendar, "start_date_time": start.isoformat(),
              "end_date_time": end.isoformat()},
             blocking=True, return_response=True,
         )
-        events = (response or {}).get(calendar, {}).get("events", [])
+        events = (response or {}).get(calendar, {}).get("events") or []
         directory = Path(hass.config.path("birthday_tracker", "events"))
         output = []
         seen = set()
+        counts = {"calendar_events_scanned": len(events), "non_birthdays_skipped": 0,
+                  "timed_events_skipped": 0, "duplicates_skipped": 0,
+                  "metadata_loaded": 0, "metadata_missing": 0,
+                  "metadata_empty": 0, "metadata_invalid": 0}
         for event in events:
-            title = event.get("summary") or "Birthday"
-            begin = str(event.get("start", ""))[:10]
+            title = str(event.get("summary") or "")
+            start_value = event.get("start")
+            if not isinstance(start_value, str) or len(start_value) != 10:
+                counts["timed_events_skipped"] += 1
+                continue
+            if not is_birthday_event(event, keyword):
+                counts["non_birthdays_skipped"] += 1
+                continue
             try:
-                event_day = date.fromisoformat(begin)
+                event_day = date.fromisoformat(start_value)
             except ValueError:
                 continue
-            # An occurrence is unique by UID + day; when UID is unavailable,
-            # use the event title + occurrence day.
+            if event_day < today:
+                continue
+            # HA's calendar.get_events doesn't include UID; this fallback is based on
+            # the title, so events with identical titles share local metadata.
             uid = str(event.get("uid") or title)
             key = (uid, event_day.isoformat())
             if key in seen:
+                counts["duplicates_skipped"] += 1
                 continue
             seen.add(key)
             file_path = directory / safe_filename(uid)
             meta = {}
             metadata_state = "missing"
-            if file_path.is_file():
+            if await hass.async_add_executor_job(file_path.is_file):
                 try:
                     raw = await hass.async_add_executor_job(file_path.read_text, "utf-8")
                     if not raw.strip():
                         metadata_state = "empty"
                     else:
-                        value = json.loads(raw)
-                        if isinstance(value, dict):
-                            meta = value
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, dict):
+                            meta = parsed
                             metadata_state = "loaded"
                         else:
                             metadata_state = "invalid"
-                except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                except (OSError, UnicodeError, json.JSONDecodeError):
                     metadata_state = "invalid"
+            counts[f"metadata_{metadata_state}"] += 1
             dob = parse_uk_date(meta.get("date_of_birth"))
-            # Calendar occurrence is authoritative for the upcoming date.
-            # Compute turning age only with a validated date of birth.
-            age = event_day.year - dob.year if dob else None
-            remaining = (event_day - today).days
-            if remaining < 0:
-                continue
+            age = event_day.year - dob.year if dob and (dob.month, dob.day) == (event_day.month, event_day.day) else None
+            # Age still valid if the calendar birthday day is offset for leap days
+            if dob and dob.month == 2 and dob.day == 29 and event_day.month == 2 and event_day.day == 28:
+                age = event_day.year - dob.year
             output.append({
                 "name": meta.get("full_name") or title,
                 "event_title": title,
                 "date": event_day.isoformat(),
-                "days_until": remaining,
+                "days_until": (event_day - today).days,
                 "turning_age": age,
                 "date_of_birth": meta.get("date_of_birth") if dob else None,
                 "address": meta.get("address") if isinstance(meta.get("address"), dict) else {},
                 "relationship": meta.get("relationship", ""),
                 "notes": meta.get("notes", ""),
-                "gift_ideas": meta.get("gift_ideas", []),
-                "interests": meta.get("interests", []),
+                "gift_ideas": meta.get("gift_ideas") if isinstance(meta.get("gift_ideas"), list) else [],
+                "interests": meta.get("interests") if isinstance(meta.get("interests"), list) else [],
                 "metadata_status": metadata_state,
                 "metadata_filename": file_path.name,
                 "uid": uid,
             })
         output.sort(key=lambda item: (item["date"], item["name"]))
-        return output
+        return {"birthdays": output, "diagnostics": counts}
 
     coordinator = DataUpdateCoordinator(
         hass, _LOGGER, name=f"Birthday Tracker ({calendar})",
         update_method=fetch, update_interval=timedelta(minutes=30),
     )
     await coordinator.async_config_entry_first_refresh()
-    async_add_entities([BirthdayTrackerSensor(coordinator, entry, calendar)])
+    async_add_entities([BirthdayTrackerSensor(coordinator, entry, calendar, keyword)])
 
 
 class BirthdayTrackerSensor(CoordinatorEntity, SensorEntity):
@@ -132,9 +118,11 @@ class BirthdayTrackerSensor(CoordinatorEntity, SensorEntity):
     _attr_has_entity_name = True
     _attr_name = "Upcoming birthdays"
 
-    def __init__(self, coordinator, entry, calendar):
+    def __init__(self, coordinator, entry, calendar, keyword):
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_upcoming"
+        self._calendar = calendar
+        self._keyword = keyword
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry.entry_id)},
             "name": f"Birthday Tracker ({calendar})",
@@ -143,9 +131,20 @@ class BirthdayTrackerSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self):
-        return len(self.coordinator.data or [])
+        return len(self.coordinator.data.get("birthdays", []))
 
     @property
     def extra_state_attributes(self):
-        birthdays = self.coordinator.data or []
-        return {"birthdays": birthdays, "next_birthday": birthdays[0]["date"] if birthdays else None}
+        data = self.coordinator.data
+        birthdays = data.get("birthdays", [])
+        return {
+            "birthdays": birthdays,
+            "next_birthday": birthdays[0]["date"] if birthdays else None,
+            "title_keyword": self._keyword,
+            "calendar_entity": self._calendar,
+            "attachment_status": "not_available_through_calendar_get_events",
+            "attachment_note": ("Apple Calendar attachments are not included in "
+                                "Home Assistant calendar.get_events results. "
+                                "This release does not download them."),
+            **data.get("diagnostics", {}),
+        }

@@ -1,31 +1,32 @@
-# Birthday Tracker — HACS-ready starter (v0.1.1)
+# Birthday Tracker v0.2.0 — HACS integration
 
-## Add this to your GitHub repository
+Tracks upcoming birthdays from an **existing Home Assistant calendar** (including a CalDAV calendar).
 
-1. Extract the ZIP and upload its **contents directly to the repository root** (not the `birthday_tracker_hacs_v0.1.1` folder).
-2. In `custom_components/birthday_tracker/manifest.json`, replace `OWNER/REPOSITORY` in `issue_tracker` with your actual GitHub repository owner and name. Keep an Issues page enabled.
-3. Commit changes to your default branch. Optionally create a GitHub release tagged `v0.1.1` after committing.
-4. In HACS add the repo as a **custom repository** with type **Integration**; then refresh / re-download.
-5. Restart Home Assistant and add **Birthday Tracker** from Settings → Devices & services.
+## Changes in v0.2.0
 
-**Important about the Lovelace card:** HACS integration installs only `custom_components/birthday_tracker`, not the repo-root `www` folder. Copy `www/birthday-tracker-card.js` manually to `/config/www/birthday-tracker-card.js` and register `/local/birthday-tracker-card.js` as a JavaScript module in Dashboard Resources.
+- Only **all-day** calendar events containing `birthday` in the title are included by default (case-insensitive).
+- The title keyword can be changed under **Settings → Devices & services → Birthday Tracker → Configure**.
+- Sensor state attributes include diagnostic counts (`calendar_events_scanned`, `non_birthdays_skipped`, `timed_events_skipped`, `metadata_missing`, etc.).
+- `attachment_status: not_available_through_calendar_get_events` explicitly explains the Apple attachment limitation.
+- Preserves the sensor unique ID from v0.1.1 so existing dashboards should continue working.
 
-**Important about Apple attachments:** the code does **not** yet fetch the `birthday.json` files attached through Apple Calendar. It currently supports optional local JSON metadata files; age and personal details remain unavailable until supplied.
+## Important limitations
 
----
+This version **does not download birthday.json attachments from iCloud**. Home Assistant's `calendar.get_events` service exposes event summary, description, start, end and location, **not `ATTACH` or CalDAV managed attachment metadata**. This version has no direct iCloud credentials or CalDAV attachment downloader. An empty JSON attachment will not provide a date of birth, so ages remain unknown until valid metadata is loaded.
 
-# Birthday Tracker — Home Assistant starter (v0.1)
+Local fallback metadata can be placed at `/config/birthday_tracker/events/<metadata_filename>` where the filename is shown on each birthday in the sensor attributes. This is a **local fallback**, not the Apple Calendar attachment. Note that Home Assistant does not expose event UIDs through this action; matching currently falls back to event titles, meaning identically titled events share a metadata filename.
 
-**Status:** Functional calendar-backed prototype, with optional *local* JSON metadata. **It does not yet retrieve Apple Calendar event attachments.** That requires investigating how this particular iCloud account exposes `ATTACH` references via CalDAV. Do not assume `birthday.json` is accessible through Home Assistant's calendar API.
+## HACS installation / upgrade
 
-## Installation
+1. Upload the **contents** of this archive to your GitHub repository root; `custom_components/birthday_tracker/manifest.json` must be directly under the repository's `custom_components` directory.
+2. Replace `OWNER/REPOSITORY` in `manifest.json` under `issue_tracker` with your GitHub URL (and optionally replace `documentation`).
+3. Commit and optionally publish release tag `v0.2.0`.
+4. In HACS, refresh/redownload the integration; restart Home Assistant.
+5. Your previously configured Birthday Tracker should remain configured. Open Developer Tools → States, find your Birthday Tracker sensor, and inspect the `birthdays` list and diagnostic counts.
 
-1. Copy `custom_components/birthday_tracker/` into `/config/custom_components/birthday_tracker/` on Home Assistant.
-2. Copy `www/birthday-tracker-card.js` into `/config/www/birthday-tracker-card.js`.
-3. Restart Home Assistant.
-4. Settings → Devices & services → Add integration → Birthday Tracker; select the existing CalDAV `calendar.*` entity.
-5. In Settings → Dashboards → Resources, add `/local/birthday-tracker-card.js` as a **JavaScript module** (if resources are managed manually).
-6. Find the new `sensor.*upcoming_birthdays` entity under the Birthday Tracker device. In the dashboard add a Manual card:
+## Dashboard card (manual installation)
+
+HACS installs the Python integration under `custom_components`; it **does not install the JavaScript card from `www/`** in this combined repository. To install the card, copy `www/birthday-tracker-card.js` into `/config/www/birthday-tracker-card.js`, register `/local/birthday-tracker-card.js` as a JavaScript module resource in your dashboard, and add a manual card:
 
 ```yaml
 type: custom:birthday-tracker-card
@@ -34,31 +35,33 @@ title: Upcoming Birthdays
 max_items: 10
 ```
 
-Replace `sensor.upcoming_birthdays` with the **actual entity ID**, which may be different.
+Use the actual entity ID created in your system. Reload your browser after updating the card.
 
-## Calendar and JSON metadata
+## Example birthday.json (local fallback, UK dates)
 
-The sensor reads events from `calendar.get_events` for the next 370 days, using all events in the chosen calendar. It expects that calendar to contain birthdays only. It takes the event summary as the person's name, and displays the upcoming occurrence. The age is omitted until a validated date of birth is available.
+```json
+{
+  "full_name": "Example Person",
+  "date_of_birth": "12/11/1994",
+  "address": {
+    "line1": "12 High Street",
+    "line2": "",
+    "city": "Birmingham",
+    "postcode": "B1 1AA",
+    "country": "UK"
+  },
+  "relationship": "Friend",
+  "notes": "",
+  "gift_ideas": [],
+  "interests": []
+}
+```
 
-For the **local fallback**, create `/config/birthday_tracker/events/` and put JSON files there. The filename is a 24-character SHA-256 prefix of the event UID (if Home Assistant supplies one) or otherwise the event title, with `.json` suffix. Expand a card row to see its expected filename. Copy `example-birthday.json` into that file and change its values. Updates are picked up every 30 minutes (or on reload). Missing/empty/invalid JSON is handled without failing the card.
+**Privacy:** The sensor exposes names and any loaded personal details as attributes to users who can access that entity in Home Assistant. Restrict dashboard and Home Assistant access accordingly.
 
-The local fallback is temporary and **does not change or download the JSON attached in Apple Calendar**.
+## Troubleshooting
 
-## Apple attachment integration: next engineering step
-
-1. Inspect the raw iCalendar `VEVENT` record via an authenticated CalDAV request (not the HA calendar service).
-2. Locate `ATTACH` properties, with parameters such as `FILENAME`, `FMTTYPE`, and `MANAGED-ID` (some servers may use different metadata).
-3. Confirm whether the attachment is a readable HTTPS URL, embedded payload, or a managed reference requiring authenticated requests.
-4. Match event UID and recurrence instances to the correct `birthday.json`.
-5. Restrict attachment fetching to an allowlist of trusted Apple/iCloud hosts, enforce size limits, avoid logging URLs/credentials/personal metadata, and never serve JSON publicly.
-6. Integrate retrieval into the backend and test with an actual attached file before marking it supported.
-
-Attachment handling varies by server and cannot be guaranteed without seeing a safe, redacted sample of the raw event's `ATTACH` metadata. **Do not share passwords, tokens, or live attachment URLs.**
-
-## Known limitations
-
-- No automatic Apple attachment ingestion yet.
-- Calendar may not expose a stable event UID, which can make local metadata matching rely on the summary. Renaming the event then changes the metadata lookup key.
-- The card reads HA state attributes; large calendars could exceed state attribute limits. A dedicated WebSocket API is a better option for large deployments.
-- Leap-day birthdays are shown according to the calendar's actual recurrence; the age uses the year of the actual occurrence.
-- This is starter code, not an audited or tested production integration.
+- If non-birthday events appear, check that their titles contain the chosen keyword, and refresh the integration.
+- If a birthday is missing, check that it is all-day and its title includes `birthday`; the title filter cannot identify other labels automatically.
+- If `turning_age` is `null`, there is no valid, matching JSON date of birth available; this version doesn't retrieve Apple attachments.
+- If a JSON file is empty, `metadata_status` becomes `empty`, rather than crashing the integration.

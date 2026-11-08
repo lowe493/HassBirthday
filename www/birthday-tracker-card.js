@@ -76,7 +76,7 @@ class BirthdayTrackerCard extends HTMLElement {
           });
           if (b.metadata_status!=="loaded") {
             const status=document.createElement("div");status.className="muted";
-            status.textContent=`JSON metadata: ${b.metadata_status}. Attachment sync is not yet enabled.`;details.append(status);
+            status.textContent=`JSON metadata: ${b.metadata_status}. Apple Calendar attachment retrieval is not available in this version.`;details.append(status);
             const hint=document.createElement("div");hint.className="muted";
             hint.textContent=`Local fallback filename: ${b.metadata_filename}`;details.append(hint);
           }

@@ -1,7 +1,7 @@
 {
   "domain": "birthday_tracker",
   "name": "Birthday Tracker",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "documentation": "https://www.home-assistant.io/integrations/calendar/",
   "requirements": [],
   "codeowners": [],
