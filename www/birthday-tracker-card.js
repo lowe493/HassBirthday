@@ -1,93 +1,192 @@
-/* Birthday Tracker Lovelace card. No external libraries. */
+/* Birthday Tracker v0.4.0 — Lovelace card. No external dependencies. */
 class BirthdayTrackerCard extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._selected = null;
+    this._filter = "all";
+    this._lastSignature = null;
+    this._escapeHandler = (event) => {
+      if (event.key === "Escape" && this._selected !== null) this._closeDetails();
+    };
+  }
   setConfig(config) {
-    if (!config.entity) throw new Error("Set entity: sensor.upcoming_birthdays");
-    this._config = config;
-    this._expanded = null;
+    if (!config || typeof config.entity !== "string" || !config.entity.trim()) {
+      throw new Error("Birthday Tracker: provide an entity, e.g. sensor.upcoming_birthdays");
+    }
+    this._config = { title: "Upcoming Birthdays", max_items: 10, ...config };
     this._render();
   }
-  set hass(value) {
-    const state = value.states[this._config?.entity];
-    const signature = JSON.stringify(state?.attributes?.birthdays || []);
-    if (this._signature !== signature) {
-      this._signature = signature;
-      this._hass = value;
+  set hass(hass) {
+    this._hass = hass;
+    if (!this._config) return;
+    const state = hass.states[this._config.entity];
+    const signature = JSON.stringify({
+      birthdays: state?.attributes?.birthdays ?? [],
+      state: state?.state ?? null,
+      filter: this._filter,
+    });
+    if (signature !== this._lastSignature) {
+      this._lastSignature = signature;
       this._render();
     }
   }
+  connectedCallback() { document.addEventListener("keydown", this._escapeHandler); }
+  disconnectedCallback() { document.removeEventListener("keydown", this._escapeHandler); }
   getCardSize() { return 4; }
+  static getStubConfig() { return { entity: "sensor.upcoming_birthdays", title: "Upcoming Birthdays", max_items: 10 }; }
+
+  _element(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
+  }
+  _date(iso, options = { day: "numeric", month: "short" }) {
+    if (typeof iso !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "Date unknown";
+    const [year, month, day] = iso.split("-").map(Number);
+    const date = new Date(year, month - 1, day, 12);
+    if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return "Date unknown";
+    return new Intl.DateTimeFormat("en-GB", options).format(date);
+  }
+  _countdown(days) {
+    if (days === 0) return "Today 🎉";
+    if (days === 1) return "Tomorrow";
+    return Number.isFinite(days) ? `${days} days` : "Upcoming";
+  }
+  _closeDetails() { this._selected = null; this._render(); }
+  _detailsField(container, label, value) {
+    if (value === null || value === undefined || value === "" || (Array.isArray(value) && !value.length)) return;
+    const line = this._element("div", "field");
+    line.append(this._element("span", "field-label", label));
+    line.append(this._element("span", "field-value", Array.isArray(value) ? value.join(", ") : value));
+    container.append(line);
+  }
+  _renderDetails(card, person) {
+    const backdrop = this._element("div", "backdrop");
+    backdrop.addEventListener("click", (event) => { if (event.target === backdrop) this._closeDetails(); });
+    const dialog = this._element("section", "dialog");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-label", `Birthday details for ${person.name || person.event_title || "person"}`);
+    const top = this._element("div", "dialog-heading");
+    const heading = this._element("div", "");
+    heading.append(this._element("div", "dialog-title", person.name || person.event_title || "Birthday"));
+    heading.append(this._element("div", "subtle", `${this._date(person.date, { day: "numeric", month: "long", year: "numeric" })} · ${this._countdown(person.days_until)}`));
+    const close = this._element("button", "close", "×");
+    close.type = "button";
+    close.setAttribute("aria-label", "Close birthday details");
+    close.addEventListener("click", () => this._closeDetails());
+    top.append(heading, close); dialog.append(top);
+    if (Number.isInteger(person.turning_age)) {
+      const age = this._element("div", "age-banner", `🎂 Turning ${person.turning_age}`);
+      dialog.append(age);
+    }
+    const fields = this._element("div", "fields");
+    this._detailsField(fields, "Full name", person.name);
+    this._detailsField(fields, "Date of birth", person.date_of_birth);
+    this._detailsField(fields, "Relationship", person.relationship);
+    const address = person.address && typeof person.address === "object" ? person.address : {};
+    this._detailsField(fields, "Address", [address.line1, address.line2, address.city, address.postcode, address.country].filter(Boolean).join(", "));
+    this._detailsField(fields, "Notes", person.notes);
+    this._detailsField(fields, "Gift ideas", Array.isArray(person.gift_ideas) ? person.gift_ideas : []);
+    this._detailsField(fields, "Interests", Array.isArray(person.interests) ? person.interests : []);
+    if (!fields.childNodes.length) fields.append(this._element("div", "subtle", "No extra birthday details available yet."));
+    dialog.append(fields);
+    if (person.metadata_status !== "loaded") {
+      dialog.append(this._element("div", "metadata-hint", "ℹ No birthday.json details loaded for this event yet."));
+    }
+    backdrop.append(dialog);
+    card.append(backdrop);
+    this._focusClose = close;
+  }
   _render() {
-    if (!this._config) return;
-    if (!this.shadowRoot) this.attachShadow({mode: "open"});
-    const state = this._hass?.states[this._config.entity];
-    this.shadowRoot.replaceChildren();
+    if (!this._config || !this.shadowRoot) return;
+    const shadow = this.shadowRoot;
+    shadow.replaceChildren();
     const style = document.createElement("style");
     style.textContent = `
-      :host{display:block;font-family:var(--primary-font-family,Arial,sans-serif)}
-      ha-card{display:block;padding:18px;color:var(--primary-text-color);background:var(--ha-card-background,var(--card-background-color));border-radius:var(--ha-card-border-radius,12px)}
-      h2{font-size:19px;margin:0 0 14px} .item{border-top:1px solid var(--divider-color,#ddd)}
-      button{font:inherit;color:inherit;background:none;border:0;padding:13px 2px;width:100%;cursor:pointer;text-align:left;display:flex;align-items:center;justify-content:space-between;gap:10px}
-      button:hover{background:var(--secondary-background-color,#eee)} .person{font-weight:600}
-      .subtitle,.muted{font-size:13px;color:var(--secondary-text-color,#777)}
-      .detail{padding:0 4px 14px;font-size:14px;line-height:1.7;overflow-wrap:anywhere}
-      .detail div{margin:2px 0}.pill{font-size:12px;padding:4px 8px;border-radius:12px;background:var(--secondary-background-color,#eee);white-space:nowrap}
-      .empty{padding:12px 0;color:var(--secondary-text-color,#777)}
+      :host{display:block;color:var(--primary-text-color);font-family:var(--primary-font-family,Roboto,sans-serif)}
+      ha-card{display:block;position:relative;background:var(--ha-card-background,var(--card-background-color,#fff));border-radius:var(--ha-card-border-radius,12px);padding:18px;overflow:visible}
+      .header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}
+      .title{font-size:20px;font-weight:650;letter-spacing:-.3px}
+      .count{font-size:12px;background:var(--secondary-background-color,#eee);border-radius:20px;padding:5px 9px;white-space:nowrap}
+      .filters{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 12px}
+      button{font-family:inherit;color:inherit;cursor:pointer}
+      .filter{border:1px solid var(--divider-color,#ddd);border-radius:20px;padding:6px 10px;background:transparent;font-size:12px}
+      .filter[aria-pressed="true"]{background:var(--primary-color,#03a9f4);color:white;border-color:transparent}
+      .entry{border-top:1px solid var(--divider-color,#ddd)}
+      .entry:first-child{border-top:none}
+      .birthday{width:100%;display:flex;align-items:center;gap:12px;text-align:left;background:transparent;border:0;padding:12px 4px;border-radius:9px}
+      .birthday:hover,.birthday:focus-visible{background:var(--secondary-background-color,#f3f3f3)}
+      .avatar{width:42px;height:42px;border-radius:50%;background:var(--secondary-background-color,#eee);display:grid;place-items:center;flex-shrink:0;font-size:21px}
+      .identity{flex:1;min-width:0}.name{font-size:14px;font-weight:650;overflow-wrap:anywhere}.subtitle{font-size:12px;color:var(--secondary-text-color,#777);margin-top:3px}
+      .right{display:grid;justify-items:end;gap:5px}.pill{font-size:12px;border-radius:18px;background:var(--secondary-background-color,#eee);padding:5px 8px;white-space:nowrap}
+      .today .pill{background:var(--success-color,#279650);color:white}.chevron{font-size:15px;color:var(--secondary-text-color,#888)}
+      .empty{padding:14px 0;color:var(--secondary-text-color,#777);font-size:14px}
+      .backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px;box-sizing:border-box}
+      .dialog{background:var(--ha-card-background,var(--card-background-color,#fff));color:var(--primary-text-color);width:min(460px,100%);max-height:min(80vh,680px);overflow:auto;border-radius:16px;padding:20px;box-sizing:border-box;box-shadow:0 18px 55px rgba(0,0,0,.25)}
+      .dialog-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.dialog-title{font-size:20px;font-weight:700}.subtle{color:var(--secondary-text-color,#777);font-size:13px;margin-top:5px}
+      .close{background:var(--secondary-background-color,#eee);border:0;border-radius:50%;width:32px;height:32px;font-size:22px;flex-shrink:0}
+      .age-banner{border-radius:10px;padding:10px 12px;margin:17px 0 5px;background:var(--secondary-background-color,#eee);font-weight:650}
+      .fields{margin-top:12px}.field{display:grid;grid-template-columns:110px minmax(0,1fr);gap:12px;padding:10px 0;border-bottom:1px solid var(--divider-color,#ddd);font-size:13px;line-height:1.5}
+      .field-label{color:var(--secondary-text-color,#777)}.field-value{overflow-wrap:anywhere;white-space:pre-wrap}
+      .metadata-hint{margin-top:14px;font-size:12px;color:var(--secondary-text-color,#777)}
+      @media(max-width:360px){.birthday{gap:8px}.avatar{height:36px;width:36px}.field{grid-template-columns:1fr;gap:2px}}
     `;
-    this.shadowRoot.append(style);
-    const card = document.createElement("ha-card");
-    const header = document.createElement("h2");
-    header.textContent = this._config.title || "🎂 Upcoming birthdays";
+    shadow.append(style);
+    const card = this._element("ha-card");
+    const state = this._hass?.states[this._config.entity];
+    const source = Array.isArray(state?.attributes?.birthdays) ? state.attributes.birthdays : [];
+    const birthdays = source.filter(b => b && typeof b === "object");
+    const header = this._element("div", "header");
+    header.append(this._element("div", "title", `🎂 ${this._config.title}`));
+    header.append(this._element("span", "count", `${birthdays.length} upcoming`));
     card.append(header);
-    if (!state) {
-      const notice = document.createElement("div");notice.className="empty";
-      notice.textContent=`Entity not found: ${this._config.entity}`;card.append(notice);
-    } else {
-      const birthdays = (state.attributes.birthdays || []).slice(0, this._config.max_items || 10);
-      if (!birthdays.length) { const empty=document.createElement("div");empty.className="empty";empty.textContent="No upcoming birthdays found";card.append(empty); }
-      birthdays.forEach((b,index)=>{
-        const row=document.createElement("div");row.className="item";
-        const button=document.createElement("button");button.type="button";
-        const left=document.createElement("div");
-        const name=document.createElement("div");name.className="person";name.textContent=b.name;
-        const sub=document.createElement("div");sub.className="subtitle";
-        const day=new Date(`${b.date}T12:00:00`);
-        const formatted=day.toLocaleDateString("en-GB",{day:"numeric",month:"long"});
-        sub.textContent=`${formatted}${b.turning_age === null ? "" : ` · Turning ${b.turning_age}`}`;
-        left.append(name,sub);
-        const pill=document.createElement("span");pill.className="pill";pill.textContent=b.days_until === 0 ? "Today 🎉" : `${b.days_until} days`;
-        button.append(left,pill);button.setAttribute("aria-expanded",String(this._expanded===index));
-        button.addEventListener("click",()=>{this._expanded=this._expanded===index?null:index;this._render();});
-        row.append(button);
-        if (this._expanded===index) {
-          const details=document.createElement("div");details.className="detail";
-          const address=b.address||{};
-          const values=[
-            ["Date of birth",b.date_of_birth], ["Relationship",b.relationship],
-            ["Address",[address.line1,address.line2,address.city,address.postcode,address.country].filter(Boolean).join(", ")],
-            ["Notes",b.notes],
-            ["Gift ideas",Array.isArray(b.gift_ideas)?b.gift_ideas.join(", "):""],
-            ["Interests",Array.isArray(b.interests)?b.interests.join(", "):""],
-          ];
-          values.forEach(([label,value])=>{
-            if (!value) return;
-            const item=document.createElement("div");
-            const bold=document.createElement("strong");bold.textContent=`${label}: `;
-            item.append(bold,document.createTextNode(String(value)));details.append(item);
-          });
-          if (b.metadata_status!=="loaded") {
-            const status=document.createElement("div");status.className="muted";
-            status.textContent=`JSON metadata: ${b.metadata_status}. Check attachment_status in the sensor diagnostics.`;details.append(status);
-            const hint=document.createElement("div");hint.className="muted";
-            hint.textContent=`Local fallback filename: ${b.metadata_filename}`;details.append(hint);
-          }
-          row.append(details);
-        }
-        card.append(row);
-      });
+    if (this._config.show_filters !== false) {
+      const filters = this._element("div", "filters");
+      for (const [key, label] of [["all", "All"], ["30", "30 days"], ["90", "90 days"]]) {
+        const btn = this._element("button", "filter", label);
+        btn.type = "button"; btn.setAttribute("aria-pressed", String(this._filter === key));
+        btn.addEventListener("click", () => { this._filter = key; this._selected = null; this._render(); });
+        filters.append(btn);
+      }
+      card.append(filters);
     }
-    this.shadowRoot.append(card);
+    if (!state) {
+      card.append(this._element("div", "empty", `Entity not found: ${this._config.entity}`));
+    } else if (state.state === "unavailable" || state.state === "unknown") {
+      card.append(this._element("div", "empty", "Birthday Tracker is currently unavailable."));
+    } else {
+      const max = Math.max(1, Number.parseInt(this._config.max_items, 10) || 10);
+      const limit = this._filter === "all" ? Infinity : Number(this._filter);
+      const visible = birthdays.filter(b => Number.isFinite(b.days_until) && b.days_until >= 0 && b.days_until <= limit).slice(0, max);
+      if (!visible.length) card.append(this._element("div", "empty", "No birthdays in this period."));
+      for (const person of visible) {
+        const item = this._element("div", `entry${person.days_until === 0 ? " today" : ""}`);
+        const button = this._element("button", "birthday");button.type = "button";
+        button.setAttribute("aria-label", `View birthday details for ${person.name || person.event_title || "person"}`);
+        const avatar = this._element("span", "avatar", person.days_until === 0 ? "🎉" : "🎁");
+        const main = this._element("div", "identity");
+        main.append(this._element("div", "name", person.name || person.event_title || "Birthday"));
+        let subtitle = this._date(person.date, { day: "numeric", month: "long" });
+        if (Number.isInteger(person.turning_age)) subtitle += ` · Turning ${person.turning_age}`;
+        main.append(this._element("div", "subtitle", subtitle));
+        const right = this._element("div", "right");
+        right.append(this._element("span", "pill", this._countdown(person.days_until)));
+        right.append(this._element("span", "chevron", "›"));
+        button.append(avatar, main, right);
+        button.addEventListener("click", () => { this._selected = person; this._render(); });
+        item.append(button);card.append(item);
+      }
+    }
+    if (this._selected !== null) this._renderDetails(card, this._selected);
+    shadow.append(card);
+    if (this._selected !== null && this._focusClose) this._focusClose.focus();
   }
 }
-if (!customElements.get("birthday-tracker-card")) customElements.define("birthday-tracker-card",BirthdayTrackerCard);
-window.customCards=window.customCards||[];
-window.customCards.push({type:"birthday-tracker-card",name:"Birthday Tracker",description:"Upcoming calendar birthdays with expandable personal information"});
+if (!customElements.get("birthday-tracker-card")) customElements.define("birthday-tracker-card", BirthdayTrackerCard);
+window.customCards = window.customCards || [];
+if (!window.customCards.some(c => c.type === "birthday-tracker-card")) {
+  window.customCards.push({ type: "birthday-tracker-card", name: "Birthday Tracker", description: "Upcoming birthdays with a details popup" });
+}
