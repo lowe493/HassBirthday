@@ -1,3 +1,19 @@
+# Birthday Tracker — HACS-ready starter (v0.1.1)
+
+## Add this to your GitHub repository
+
+1. Extract the ZIP and upload its **contents directly to the repository root** (not the `birthday_tracker_hacs_v0.1.1` folder).
+2. In `custom_components/birthday_tracker/manifest.json`, replace `OWNER/REPOSITORY` in `issue_tracker` with your actual GitHub repository owner and name. Keep an Issues page enabled.
+3. Commit changes to your default branch. Optionally create a GitHub release tagged `v0.1.1` after committing.
+4. In HACS add the repo as a **custom repository** with type **Integration**; then refresh / re-download.
+5. Restart Home Assistant and add **Birthday Tracker** from Settings → Devices & services.
+
+**Important about the Lovelace card:** HACS integration installs only `custom_components/birthday_tracker`, not the repo-root `www` folder. Copy `www/birthday-tracker-card.js` manually to `/config/www/birthday-tracker-card.js` and register `/local/birthday-tracker-card.js` as a JavaScript module in Dashboard Resources.
+
+**Important about Apple attachments:** the code does **not** yet fetch the `birthday.json` files attached through Apple Calendar. It currently supports optional local JSON metadata files; age and personal details remain unavailable until supplied.
+
+---
+
 # Birthday Tracker — Home Assistant starter (v0.1)
 
 **Status:** Functional calendar-backed prototype, with optional *local* JSON metadata. **It does not yet retrieve Apple Calendar event attachments.** That requires investigating how this particular iCloud account exposes `ATTACH` references via CalDAV. Do not assume `birthday.json` is accessible through Home Assistant's calendar API.
