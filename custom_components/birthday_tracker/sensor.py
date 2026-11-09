@@ -15,7 +15,7 @@ from homeassistant.util import dt as dt_util
 from .const import (DOMAIN, CONF_CALENDAR, CONF_KEYWORD, DEFAULT_KEYWORD,
                     CONF_CALDAV_URL, CONF_CALDAV_USER, CONF_CALDAV_PASSWORD)
 from .helpers import (is_birthday_event, parse_uk_date, safe_filename,
-                      normalize_people, birthday_on_event)
+                      normalize_people, birthday_on_event, birthday_date_mismatch)
 from .caldav_attachments import load_calendars_attachments
 from .caldav_discovery import discover_calendar
 
@@ -51,7 +51,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                   "timed_events_skipped": 0, "duplicates_skipped": 0,
                   "recurring_occurrences_skipped": 0,
                   "metadata_loaded": 0, "metadata_missing": 0,
-                  "metadata_empty": 0, "metadata_invalid": 0}
+                  "metadata_empty": 0, "metadata_invalid": 0, "birthday_date_mismatches": 0}
         cal_url = entry.options.get(CONF_CALDAV_URL, "").strip()
         cal_user = entry.options.get(CONF_CALDAV_USER, "").strip()
         cal_pass = entry.options.get(CONF_CALDAV_PASSWORD, "")
@@ -126,11 +126,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 persons = [{}]
             for person in persons:
                 dob = parse_uk_date(person.get('date_of_birth'))
+                date_mismatch = birthday_date_mismatch(dob, day)
+                if date_mismatch:
+                    counts['birthday_date_mismatches'] += 1
                 output.append({
                     'name': person.get('full_name') or title,
                     'event_title': title,
                     'date': day.isoformat(), 'days_until': (day - today).days,
                     'turning_age': birthday_on_event(dob, day),
+                    'date_mismatch': date_mismatch,
                     'date_of_birth': person.get('date_of_birth') if dob else None,
                     'address': person.get('address') if isinstance(person.get('address'), dict) else {},
                     'relationship': person.get('relationship', ''),

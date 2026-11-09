@@ -1,3 +1,30 @@
+# Birthday Tracker v0.4.3 — Fix age calculation
+
+This update fixes `turning_age: null` when an attached `birthday.json` contains a valid UK date of birth but its day/month differs from the Apple calendar event. **The calendar continues to determine the scheduled birthday date and countdown.** The JSON date determines the birth year for the turning age; the discrepancy is reported instead of suppressing the age.
+
+## Example
+
+An event scheduled for `2026-11-12` with JSON `date_of_birth: 09/11/1996` now reports:
+
+```yaml
+turning_age: 30
+date_mismatch: true
+```
+
+The calendar event is still shown as November 12. If the correct date is November 9, edit the recurring event in Apple Calendar too. The sensor also includes `birthday_date_mismatches` in its diagnostic attributes. If the JSON birth date is missing/invalid, `turning_age` remains null. The existing leap-day observation convention is preserved.
+
+## HACS update
+
+1. Extract the ZIP at the **root** of your existing GitHub repository.
+2. Preserve any customised GitHub issue URL in `custom_components/birthday_tracker/manifest.json`.
+3. Commit, tag and release `v0.4.3`, then refresh HACS and install the update.
+4. Restart Home Assistant or reload the Birthday Tracker integration.
+5. Check Developer Tools → States → Birthday Tracker: `turning_age`, `date_mismatch` and `birthday_date_mismatches`.
+
+The Lovelace card JavaScript is unchanged from v0.4.2; **you do not need to recopy it or update its resource URL**. All existing YAML options remain supported.
+
+## Previous v0.4.2 details
+
 # Birthday Tracker v0.4.2 — Lovelace card configuration
 
 This release keeps the working v0.3.3 Apple iCloud CalDAV attachment downloader **unchanged** and redesigns the Lovelace card.
